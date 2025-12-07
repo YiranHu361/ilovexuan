@@ -9,6 +9,9 @@ export class ParticleSystem {
     
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.1;
     this.camera.position.z = 50; // Further back initial view
 
     this.particleCount = 30000;
@@ -147,6 +150,7 @@ export class ParticleSystem {
     const colors = new Float32Array(this.particleCount * 3); // Per-particle RGB
     const ids = new Float32Array(this.particleCount);
     const isPhotos = new Float32Array(this.particleCount);
+    const sizes = new Float32Array(this.particleCount);
 
     const defaultColor = new THREE.Color(this.color);
 
@@ -161,6 +165,7 @@ export class ParticleSystem {
       
       ids[i] = i;
       isPhotos[i] = Math.random() > 0.75 ? 1.0 : 0.0; // Increased to match visual density (25%)
+      sizes[i] = 0.8 + Math.random() * 0.7; // Mild size variance for nicer depth
 
       // Random Texture Offset for 3x3 Grid
       // 8 Images (0..7)
@@ -193,6 +198,7 @@ export class ParticleSystem {
     this.instancedGeometry.setAttribute('aColor', new THREE.InstancedBufferAttribute(colors, 3));
     this.instancedGeometry.setAttribute('aID', new THREE.InstancedBufferAttribute(ids, 1));
     this.instancedGeometry.setAttribute('aIsPhoto', new THREE.InstancedBufferAttribute(isPhotos, 1));
+    this.instancedGeometry.setAttribute('aSize', new THREE.InstancedBufferAttribute(sizes, 1));
 
     this.material = new THREE.ShaderMaterial({
       uniforms: {
@@ -221,6 +227,7 @@ export class ParticleSystem {
         attribute vec3 aColor;
         attribute float aID; // Added
         attribute float aIsPhoto; // Added
+        attribute float aSize; // Added
         
         varying vec2 vImgOffset;
         varying vec2 vUv;
@@ -323,12 +330,10 @@ export class ParticleSystem {
                 oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c
             );
             transformed = rotMat * transformed;
-            
-            // Normal Scale
-            transformed *= 2.5; 
+            transformed *= 2.5 * aSize; 
           } else {
             // Closed State
-            transformed *= 0.8; 
+            transformed *= 0.9 * aSize; 
           }
 
           vec4 mvPosition = modelViewMatrix * vec4(finalPos + transformed, 1.0);
@@ -385,6 +390,11 @@ export class ParticleSystem {
           
           vec4 finalColor = mix(openStateColor, closedStateColor, vState);
           
+          // Soften particle edges for non-photo sprites to cut aliasing
+          float edge = smoothstep(0.98, 0.55, length(vUv - 0.5) * 2.0);
+          float alphaMask = mix(edge, 1.0, vIsPhoto); // Keep photos square, soften sparkles
+          finalColor.a *= alphaMask;
+          
           if (finalColor.a < 0.1) discard;
           gl_FragColor = finalColor;
         }
@@ -392,7 +402,8 @@ export class ParticleSystem {
       side: THREE.DoubleSide,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending
+      blending: THREE.AdditiveBlending,
+      dithering: true
     });
 
     this.particles = new THREE.InstancedMesh(this.instancedGeometry, this.material, this.particleCount);
@@ -559,7 +570,8 @@ export class ParticleSystem {
           depthWrite: false, 
           blending: THREE.AdditiveBlending,
           transparent: true,
-          side: THREE.DoubleSide
+          side: THREE.DoubleSide,
+          dithering: true
       });
       
       this.snowParticles = new THREE.InstancedMesh(this.snowGeometry, this.snowMaterial, snowCount);
@@ -572,6 +584,10 @@ export class ParticleSystem {
   }
 
   generateShape(type) {
+    const allowedShapes = ['heart', 'planet', 'star', 'tree'];
+    if (!allowedShapes.includes(type)) {
+        type = 'heart';
+    }
     this.currentShape = type;
     const positions = this.instancedGeometry.attributes.aTargetPos.array;
     const colors = this.instancedGeometry.attributes.aColor.array;
@@ -641,40 +657,38 @@ export class ParticleSystem {
              positions[idx++] = x; positions[idx++] = y; positions[idx++] = z;
         }
     } else if (type === 'planet') { 
-        // Planet: Core + Multiple Rings + Moons
-        // Colors: Core = Maroon, Rings = Gold/Dust, Moons = White
+        // Planet: banded core + layered rings + moons
+        const tiltX = 0.4; 
+        const tiltZ = 0.2;
         for (let i = 0; i < this.particleCount; i++) {
             const r = Math.random();
-            if (r < 0.5) {
-                // Core Planet Sphere (50%)
-                setHex('#800000'); // Maroon
+            if (r < 0.55) {
+                // Core planet with subtle latitude bands
+                const dir = randomInSphere().normalize();
+                const latitude = Math.asin(dir.y);
+                const band = Math.sin(latitude * 4.0 + Math.random() * 0.4) * 0.5 + 0.5;
+                const coreRadius = 10.0 + Math.random() * 0.8; // Keep radius consistent so planet stays round
+                const coreColor = new THREE.Color().setHSL(0.04 + band * 0.025, 0.7, 0.28 + band * 0.25);
+                setRGB(coreColor.r, coreColor.g, coreColor.b);
                 
-                const p = randomInSphere();
-                // Flatten slightly poles? No, perfect sphere looks nice
-                positions[idx++] = p.x * 10; 
-                positions[idx++] = p.y * 10; 
-                positions[idx++] = p.z * 10;
-            } else if (r < 0.8) {
-                // Main Ring (30%)
-                // Gold/Sienna mix
-                if (Math.random() > 0.5) setHex('#FFD700'); // Gold
-                else setHex('#A0522D'); // Sienna
-                
+                const pos = dir.multiplyScalar(coreRadius);
+                positions[idx++] = pos.x; 
+                positions[idx++] = pos.y; 
+                positions[idx++] = pos.z;
+            } else if (r < 0.78) {
+                // Main metallic ring
                 const angle = Math.random() * Math.PI * 2;
-                // Dist 14 to 22
-                const dist = 14 + Math.random() * 8;
-                const height = (Math.random() - 0.5) * 0.5; // Thin
+                const dist = 14 + Math.random() * 10;
+                const height = (Math.random() - 0.5) * 0.6; // Thin ring
                 
-                // Tilt the ring system
-                const tiltX = 0.4; 
-                const tiltZ = 0.2;
-                
+                const goldMix = 0.6 + Math.random() * 0.3;
+                const ringColor = new THREE.Color('#c9a34a').lerp(new THREE.Color('#f3d38c'), goldMix);
+                setRGB(ringColor.r, ringColor.g, ringColor.b);
+
                 let x = dist * Math.cos(angle);
                 let z = dist * Math.sin(angle);
                 let y = height;
 
-                // Apply tilt manually or use rotation matrix. 
-                // Simple tilt around X then Z
                 let y1 = y * Math.cos(tiltX) - z * Math.sin(tiltX);
                 let z1 = y * Math.sin(tiltX) + z * Math.cos(tiltX);
                 let x1 = x;
@@ -684,23 +698,19 @@ export class ParticleSystem {
                 let z2 = z1;
 
                 positions[idx++] = x2; positions[idx++] = y2; positions[idx++] = z2;
-            } else if (r < 0.95) {
-                // Outer/Inner Dust Rings (15%)
-                setHex('#F4A460'); // Sandy Brown
-                
-                // Two bands: one tight (12-13), one far (24-26)
-                const isInner = Math.random() > 0.5;
-                const dist = isInner ? (12 + Math.random()) : (24 + Math.random() * 2);
+            } else if (r < 0.92) {
+                // Dusty arcs and secondary debris rings
                 const angle = Math.random() * Math.PI * 2;
-                const height = (Math.random() - 0.5) * 1.5; // More scatter
+                const isVerticalArc = Math.random() < 0.35;
+                const dist = isVerticalArc ? (18 + Math.random() * 6) : (24 + Math.random() * 6);
+                const height = isVerticalArc ? (Math.random() - 0.5) * 8.0 : (Math.random() - 0.5) * 2.5;
                 
-                 // Same tilt
-                const tiltX = 0.4; 
-                const tiltZ = 0.2;
+                const colorBase = new THREE.Color('#d3b17d').lerp(new THREE.Color('#8c5c2b'), Math.random() * 0.4);
+                setRGB(colorBase.r, colorBase.g, colorBase.b);
                 
                 let x = dist * Math.cos(angle);
                 let z = dist * Math.sin(angle);
-                let y = height;
+                let y = height + Math.sin(angle * 2.0) * 0.4; // Warp for arc feel
 
                 let y1 = y * Math.cos(tiltX) - z * Math.sin(tiltX);
                 let z1 = y * Math.sin(tiltX) + z * Math.cos(tiltX);
@@ -712,29 +722,23 @@ export class ParticleSystem {
 
                 positions[idx++] = x2; positions[idx++] = y2; positions[idx++] = z2;
             } else {
-                // Moons (5%)
-                setHex('#F0F8FF'); // Alice Blue
-                
-                // Small clumps
-                const moonIdx = Math.floor(Math.random() * 3); // 3 moons
+                // Moons and glowing specks
                 const moonOffsets = [
-                    {r: 20, a: 0}, 
-                    {r: 28, a: 2.1},
-                    {r: 16, a: 4.5}
+                    {r: 20, a: 0.0},
+                    {r: 27, a: 2.1},
+                    {r: 16, a: 4.5},
+                    {r: 22, a: 5.4}
                 ];
-                const m = moonOffsets[moonIdx];
-                // Small sphere around moon center
-                const p = randomInSphere();
-                const moonR = 1.5;
+                const m = moonOffsets[Math.floor(Math.random() * moonOffsets.length)];
+                const dir = randomInSphere();
+                const moonR = 1.8 + Math.random() * 0.8;
                 
-                // Moon center
+                const moonColor = new THREE.Color('#f0f8ff').lerp(new THREE.Color('#ffefd5'), Math.random() * 0.4);
+                setRGB(moonColor.r, moonColor.g, moonColor.b);
+
                 const mx = m.r * Math.cos(m.a);
                 const mz = m.r * Math.sin(m.a);
                 const my = 0;
-                
-                // Tilt moon orbit too?
-                const tiltX = 0.4; 
-                const tiltZ = 0.2;
                 
                 let y1 = my * Math.cos(tiltX) - mz * Math.sin(tiltX);
                 let z1 = my * Math.sin(tiltX) + mz * Math.cos(tiltX);
@@ -743,9 +747,9 @@ export class ParticleSystem {
                 let y2 = x1 * Math.sin(tiltZ) + y1 * Math.cos(tiltZ);
                 let z2 = z1;
 
-                positions[idx++] = x2 + p.x * moonR; 
-                positions[idx++] = y2 + p.y * moonR; 
-                positions[idx++] = z2 + p.z * moonR;
+                positions[idx++] = x2 + dir.x * moonR; 
+                positions[idx++] = y2 + dir.y * moonR; 
+                positions[idx++] = z2 + dir.z * moonR;
             }
         }
     } else if (type === 'star') {
@@ -764,91 +768,75 @@ export class ParticleSystem {
         }
     } else if (type === 'tree') {
         const layers = 7; // Matches Christmas-tree config
+        const starCenter = new THREE.Vector3(0, 11, 0);
         for (let i = 0; i < this.particleCount; i++) {
-             // height t from 0 (bottom) to 1 (top)
              const t = Math.random();
-             const y = (t * 20) - 10; // -10 to 10 height
              
-             // 85% Tree Body, 15% Magic Spiral/Decor
-             if (Math.random() < 0.85) {
-                 // Tree Body
-                 // Main Green + Occasional Ornament
-                 if (Math.random() < 0.1) {
-                     // Decoration (10% of body)
-                     const ornamentType = Math.random();
-                     if (ornamentType < 0.33) setHex('#FF0000'); // Red
-                     else if (ornamentType < 0.66) setHex('#FFD700'); // Gold
-                     else setHex('#1E90FF'); // Dodger Blue
-                 } else {
-                     setHex('#0f5e2f'); // Forest Green
-                 }
-                 
-                 const layerT = t * layers;
-                 const layerProgress = layerT % 1;
-                 const layerShape = Math.pow(1 - layerProgress, 0.8);
-                 const maxR = 6.5; // Scaled to fit screen
-                 const rBoundary = (1 - t) * maxR * (0.75 + 0.5 * layerShape);
-                 
-                 // Volume fill
-                 const r = rBoundary * Math.sqrt(0.1 + 0.9 * Math.random());
+             // Trunk cluster
+             if (t < 0.08) {
+                 setHex('#4a2e16'); // Wood tone
                  const theta = Math.random() * Math.PI * 2;
+                 const r = 0.6 + Math.random() * 0.8;
+                 const y = -10 + Math.random() * 4;
                  
-                 positions[idx++] = r * Math.cos(theta);
+                 positions[idx++] = r * Math.cos(theta) * 0.8;
                  positions[idx++] = y;
-                 positions[idx++] = r * Math.sin(theta);
+                 positions[idx++] = r * Math.sin(theta) * 0.8;
+                 continue;
+             }
+             
+             // Star topper
+             if (t > 0.94) {
+                 setHex('#FFD700');
+                 const dir = randomInSphere().normalize();
+                 const s = 1.0 + Math.random() * 0.8;
+                 
+                 positions[idx++] = starCenter.x + dir.x * s;
+                 positions[idx++] = starCenter.y + dir.y * s;
+                 positions[idx++] = starCenter.z + dir.z * s;
+                 continue;
+             }
+
+             const y = (t * 20) - 10; // -10 to 10 height
+             const layerT = t * layers;
+             const layerProgress = layerT % 1;
+             const layerShape = Math.pow(1 - layerProgress, 0.8);
+             const maxR = 6.5; // Scaled to fit screen
+             const rBoundary = (1 - t) * maxR * (0.75 + 0.5 * layerShape);
+             const theta = Math.random() * Math.PI * 2;
+             const wobble = Math.sin(theta * 3.0 + layerT) * 0.2;
+             const r = rBoundary * Math.sqrt(0.1 + 0.9 * Math.random());
+             const edgeFactor = rBoundary > 0 ? (r / rBoundary) : 0.0;
+             const yPos = y + wobble;
+
+             // Garland wrap
+             if (Math.random() < 0.12) {
+                 setHex('#FFD966');
+                 const turns = 4.5;
+                 const angle = t * turns * 2 * Math.PI;
+                 const garlandR = rBoundary * 0.85 + 0.3;
+                 positions[idx++] = garlandR * Math.cos(angle);
+                 positions[idx++] = yPos;
+                 positions[idx++] = garlandR * Math.sin(angle);
+                 continue;
+             }
+             
+             // Ornaments and snowy tips
+             if (Math.random() < (0.12 + edgeFactor * 0.25)) {
+                 setHex('#e6f6ff'); // Snow frosting
+             } else if (Math.random() < 0.14) {
+                 const ornamentType = Math.random();
+                 if (ornamentType < 0.33) setHex('#FF0000'); // Red
+                 else if (ornamentType < 0.66) setHex('#FFD700'); // Gold
+                 else setHex('#1E90FF'); // Dodger Blue
              } else {
-                 // Magic Spiral / Ornaments
-                 // Spiral runs from bottom to top
-                 setHex('#FFD700'); // Gold for spiral
-                 
-                 const spiralTurns = 3.5;
-                 const angle = t * spiralTurns * 2 * Math.PI;
-                 
-                 // Radius at this height
-                 const layerT = t * layers;
-                 const layerProgress = layerT % 1;
-                 const layerShape = Math.pow(1 - layerProgress, 0.8);
-                 const maxR = 6.5;
-                 const rBase = (1 - t) * maxR * (0.75 + 0.5 * layerShape);
-                 
-                 const r = rBase + 0.8; // Offset from surface
-                 
-                 positions[idx++] = r * Math.cos(angle);
-                 positions[idx++] = y;
-                 positions[idx++] = r * Math.sin(angle);
+                 setHex('#0f5e2f'); // Forest Green
              }
+             
+             positions[idx++] = r * Math.cos(theta);
+             positions[idx++] = yPos;
+             positions[idx++] = r * Math.sin(theta);
         }
-    } else if (type === 'buddha') {
-        for (let i = 0; i < this.particleCount; i++) {
-             setHex(this.color);
-             const rand = Math.random();
-             if (rand < 0.25) { 
-                 const p = randomInSphere();
-                 positions[idx++] = p.x * 3.5;
-                 positions[idx++] = p.y * 4.0 + 9;
-                 positions[idx++] = p.z * 3.5;
-             } else if (rand < 0.8) { 
-                 const p = randomInSphere();
-                 positions[idx++] = p.x * 6;
-                 positions[idx++] = p.y * 7 - 1; 
-                 positions[idx++] = p.z * 5;
-             } else { 
-                 const p = randomInSphere();
-                 positions[idx++] = p.x * 9;
-                 positions[idx++] = p.y * 2 - 7;
-                 positions[idx++] = p.z * 7;
-             }
-        }
-    } else if (type === 'fireworks') {
-         for (let i = 0; i < this.particleCount; i++) {
-            setHex(this.color);
-            const p = randomInSphere();
-            const r = 20 * Math.cbrt(Math.random()); 
-            const dir = p.normalize();
-            positions[idx++] = dir.x * r;
-            positions[idx++] = dir.y * r;
-            positions[idx++] = dir.z * r;
-         }
     }
 
     this.instancedGeometry.attributes.aTargetPos.needsUpdate = true;
@@ -960,11 +948,12 @@ export class ParticleSystem {
 
   setShape(shape) {
       this.generateShape(shape);
+      const appliedShape = this.currentShape;
       
       // Auto-set theme color for specific shapes if desired
-      if (shape === 'planet') {
+      if (appliedShape === 'planet') {
           this.setColor('#800000'); // Maroon Red
-      } else if (shape === 'tree') {
+      } else if (appliedShape === 'tree') {
           this.setColor('#0f5e2f'); // Forest Green (Optional, user can override)
       }
       
@@ -1003,7 +992,8 @@ export class ParticleSystem {
         `,
         transparent: true,
         depthWrite: false,
-        blending: THREE.NormalBlending
+        blending: THREE.NormalBlending,
+        dithering: true
     });
     
     this.popupMesh = new THREE.Mesh(geometry, material);
