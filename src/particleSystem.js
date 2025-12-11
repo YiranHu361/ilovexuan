@@ -372,13 +372,13 @@ export class ParticleSystem {
           
           // Heavily dim photos to avoid blowout with additive blending
           // Center particles get dimmed much more aggressively
-          float baseBrightness = 0.04; // Very low base
+          float baseBrightness = 0.08; // Very low base
           float depthDim = smoothstep(0.0, 1.0, vDepth) * 0.7 + 0.3; // 0.3-1.0 based on depth (closer = much dimmer)
           photoContent.rgb *= baseBrightness * depthDim;
-          photoContent.a *= 0.6; // Also reduce alpha to prevent buildup
+          photoContent.a *= 0.8; // Also reduce alpha to prevent buildup
           
           vec4 dustContent = texture2D(uSparkleTexture, vUv);
-          dustContent.rgb *= vColor * 0.05; // Very faint dust
+          dustContent.rgb *= vColor * 0.10; // Very faint dust
           dustContent.a *= 0.4;
           
           vec4 openStateColor = mix(dustContent, photoContent, isPhoto);
