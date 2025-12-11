@@ -370,15 +370,16 @@ export class ParticleSystem {
           
           vec4 photoContent = texture2D(uPhotoTexture, photoUV);
           
-          // Dim photos significantly to avoid blowout with additive blending
-          // Also apply depth-based dimming - closer particles (lower depth) are dimmer
-          // to reduce the "sun in the middle" effect from overlapping
-          float baseBrightness = 0.15; // Reduced from 0.4
-          float depthDim = smoothstep(0.0, 1.0, vDepth) * 0.15 + 0.85; // 0.85-1.0 based on depth
+          // Heavily dim photos to avoid blowout with additive blending
+          // Center particles get dimmed much more aggressively
+          float baseBrightness = 0.04; // Very low base
+          float depthDim = smoothstep(0.0, 1.0, vDepth) * 0.7 + 0.3; // 0.3-1.0 based on depth (closer = much dimmer)
           photoContent.rgb *= baseBrightness * depthDim;
+          photoContent.a *= 0.6; // Also reduce alpha to prevent buildup
           
           vec4 dustContent = texture2D(uSparkleTexture, vUv);
-          dustContent.rgb *= vColor * 0.15; // Also reduce dust brightness
+          dustContent.rgb *= vColor * 0.05; // Very faint dust
+          dustContent.a *= 0.4;
           
           vec4 openStateColor = mix(dustContent, photoContent, isPhoto);
           
