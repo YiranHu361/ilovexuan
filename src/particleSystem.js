@@ -39,14 +39,14 @@ export class ParticleSystem {
     this.isClosed = false;
     this.color = new THREE.Color('#ff0066');
 
-    // Photo Atlas State
+    // Photo Atlas State - 8x8 grid = 64 photos max
     this.photoAtlasCanvas = null;
     this.photoAtlasCtx = null;
     this.photoCount = 8; // Initial photos loaded
-    this.nextPhotoSlot = 8; // Next slot to fill (0-8, wraps around)
-    this.atlasSize = 2048;
-    this.atlasCols = 3;
-    this.atlasRows = 3;
+    this.nextPhotoSlot = 8; // Next slot to fill
+    this.atlasSize = 4096; // Larger texture for more photos
+    this.atlasCols = 8;
+    this.atlasRows = 8;
 
     // Load textures
     this.textureLoader = new THREE.TextureLoader();
@@ -96,37 +96,20 @@ export class ParticleSystem {
     texture.minFilter = THREE.LinearFilter;
     texture.magFilter = THREE.LinearFilter;
     
-    // Load 8 images: 1.jpg to 8.jpg
-    // Grid: 3x3 (9 slots). Last one empty or repeat.
+    // Load 8 initial images: 1.jpg to 8.jpg
+    // Grid is now dynamic (8x8 = 64 slots)
     const urls = [];
     for(let i=1; i<=8; i++) urls.push(`/photos/${i}.jpg`);
     
-    const cols = 3;
-    const rows = 3;
+    const cols = this.atlasCols;
     const cellW = size / cols;
-    const cellH = size / rows;
+    const cellH = size / this.atlasRows;
     
     urls.forEach((url, index) => {
         const img = new Image();
         img.onload = () => {
             const c = index % cols;
-            const r = Math.floor(index / cols); // 0, 1, 2
-            // Invert Y? Canvas top-left is 0,0. UV 0,0 is bottom-left.
-            // ThreeJS Texture default: flipY = true.
-            // So drawing 0,0 on canvas corresponds to UV (0,1).
-            // This can be confusing.
-            // Standard approach: Draw from top-left (row 0) to bottom (row 2).
-            // UV mapping: 
-            // If row=0 (top), UV.y should be high (0.66).
-            // If row=2 (bottom), UV.y should be low (0.0).
-            
-            // Actually, let's keep canvas standard (0,0 is top-left).
-            // And handle UV flip or just calculate offsets correctly.
-            // If flipY=true (default), (0,0) image data goes to (0,1) UV.
-            // So:
-            // Row 0 (Top of canvas) -> UV Y = 0.666
-            // Row 1 (Middle) -> UV Y = 0.333
-            // Row 2 (Bottom) -> UV Y = 0.0
+            const r = Math.floor(index / cols);
             
             // Draw Crop to Square
             const aspect = img.width / img.height;
@@ -181,24 +164,18 @@ export class ParticleSystem {
       isPhotos[i] = Math.random() > 0.75 ? 1.0 : 0.0; // Increased to match visual density (25%)
       sizes[i] = 0.8 + Math.random() * 0.7; // Mild size variance for nicer depth
 
-      // Random Texture Offset for 3x3 Grid
-      // 8 Images (0..7)
+      // Random Texture Offset for grid
+      // Initial 8 images spread across grid
       const imgIdx = Math.floor(Math.random() * 8); 
-      // Cols = 3. 
-      const col = imgIdx % 3;
-      const row = Math.floor(imgIdx / 3); // 0, 1, 2
+      const col = imgIdx % this.atlasCols;
+      const row = Math.floor(imgIdx / this.atlasCols);
       
       // Calculate UV Offset
-      // U = col * (1/3)
-      // V = row * (1/3)? 
-      // With FlipY=True:
-      // Row 0 (Top in Canvas) maps to V=0.666 (Top in UV)
-      // Row 1 maps to V=0.333
-      // Row 2 maps to V=0.0
-      // So V = (2 - row) * (1/3)
-      
-      imgOffsets[i * 2] = col * (1.0/3.0);
-      imgOffsets[i * 2 + 1] = (2.0 - row) * (1.0/3.0);
+      // U = col * (1/cols)
+      // V = (maxRow - row) * (1/rows) for FlipY texture
+      const cellSize = 1.0 / this.atlasCols;
+      imgOffsets[i * 2] = col * cellSize;
+      imgOffsets[i * 2 + 1] = (this.atlasRows - 1 - row) * cellSize;
       
       // Default Color
       colors[i * 3] = defaultColor.r;
@@ -225,7 +202,8 @@ export class ParticleSystem {
         uHandPos: { value: new THREE.Vector3(0, 0, 0) },
         uHandRotation: { value: new THREE.Vector4(0, 0, 0, 1) }, // Quaternion
         uScale: { value: 1.0 },
-        uClickedID: { value: -1.0 } // Added
+        uClickedID: { value: -1.0 },
+        uAtlasGridSize: { value: this.atlasCols } // Grid size for UV calculation
       },
       vertexShader: `
         uniform float uTime;
@@ -362,6 +340,7 @@ export class ParticleSystem {
         uniform sampler2D uPhotoTexture;
         uniform sampler2D uSparkleTexture;
         uniform float uClickedID;
+        uniform float uAtlasGridSize;
 
         varying vec2 vImgOffset;
         varying vec2 vUv;
@@ -374,9 +353,9 @@ export class ParticleSystem {
 
         void main() {
           // Texture Coordinates
-          // Photos use grid atlas (3x3)
-          // Scale UV by 1/3
-          vec2 photoUV = vUv * (1.0/3.0) + vImgOffset;
+          // Photos use grid atlas (dynamic size)
+          float cellSize = 1.0 / uAtlasGridSize;
+          vec2 photoUV = vUv * cellSize + vImgOffset;
           
           // === Open State (Clouds/Photos) ===
           // Use CPU-determined type
@@ -1156,6 +1135,7 @@ export class ParticleSystem {
     const isPhotos = this.instancedGeometry.attributes.aIsPhoto.array;
     const cols = this.atlasCols;
     const maxSlots = Math.min(this.photoCount, cols * this.atlasRows);
+    const cellSize = 1.0 / cols;
 
     // Randomly reassign ~20% of photo particles to potentially show newer photos
     for (let i = 0; i < this.particleCount; i++) {
@@ -1164,8 +1144,8 @@ export class ParticleSystem {
         const col = imgIdx % cols;
         const row = Math.floor(imgIdx / cols);
 
-        imgOffsets[i * 2] = col * (1.0 / 3.0);
-        imgOffsets[i * 2 + 1] = (2.0 - row) * (1.0 / 3.0);
+        imgOffsets[i * 2] = col * cellSize;
+        imgOffsets[i * 2 + 1] = (this.atlasRows - 1 - row) * cellSize;
       }
     }
 
@@ -1183,7 +1163,8 @@ export class ParticleSystem {
         uniforms: {
             uTexture: { value: this.photoTexture },
             uImgOffset: { value: new THREE.Vector2(0, 0) },
-            uOpacity: { value: 1.0 }
+            uOpacity: { value: 1.0 },
+            uAtlasGridSize: { value: this.atlasCols }
         },
         vertexShader: `
             varying vec2 vUv;
@@ -1196,9 +1177,11 @@ export class ParticleSystem {
             uniform sampler2D uTexture;
             uniform vec2 uImgOffset;
             uniform float uOpacity;
+            uniform float uAtlasGridSize;
             varying vec2 vUv;
             void main() {
-                vec2 uv = vUv * (1.0/3.0) + uImgOffset;
+                float cellSize = 1.0 / uAtlasGridSize;
+                vec2 uv = vUv * cellSize + uImgOffset;
                 vec4 color = texture2D(uTexture, uv);
                 gl_FragColor = vec4(color.rgb, color.a * uOpacity);
             }
