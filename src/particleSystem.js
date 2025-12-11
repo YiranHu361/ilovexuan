@@ -436,9 +436,20 @@ export class ParticleSystem {
     const isPhotos = isPhotoAttr.array;
     const count = this.particleCount;
     
-    let randomID = -1;
+    // Select a random photo slot with EQUAL probability (1/n for each photo)
+    const randomPhotoSlot = Math.floor(Math.random() * this.photoCount);
+    const cellSize = 1.0 / this.atlasCols;
+    const col = randomPhotoSlot % this.atlasCols;
+    const row = Math.floor(randomPhotoSlot / this.atlasCols);
     
-    // Try 100 times to find a photo particle
+    // Calculate UV offset for this slot
+    const ox = col * cellSize;
+    const oy = (this.atlasRows - 1 - row) * cellSize;
+    
+    console.log(`Showing photo slot ${randomPhotoSlot} of ${this.photoCount} (probability: ${(100/this.photoCount).toFixed(1)}%)`);
+    
+    // Find a photo particle to use as starting position
+    let randomID = -1;
     for(let i=0; i<100; i++) {
         const r = Math.floor(Math.random() * count);
         if (isPhotos[r] > 0.5) {
@@ -448,20 +459,13 @@ export class ParticleSystem {
     }
     
     if (randomID !== -1) {
-        console.log("Triggering Photo ID:", randomID);
-        
         // Hide original particle
         if(this.material.uniforms.uClickedID) {
             this.material.uniforms.uClickedID.value = randomID;
         }
         
-        // Trigger Popup
+        // Trigger Popup with the randomly selected photo (equal probability)
         const startPos = this.getParticlePos(randomID);
-        
-        // Get Img Offset for this ID
-        const imgOffsets = this.instancedGeometry.attributes.aImgOffset.array;
-        const ox = imgOffsets[randomID * 2];
-        const oy = imgOffsets[randomID * 2 + 1];
         
         this.popupMesh.material.uniforms.uImgOffset.value.set(ox, oy);
         
@@ -1130,16 +1134,16 @@ export class ParticleSystem {
   }
 
   updateParticlePhotoAssignments() {
-    // Reassign some particles to use the newer photos
+    // Reassign ALL photo particles to use any photo with equal probability
     const imgOffsets = this.instancedGeometry.attributes.aImgOffset.array;
     const isPhotos = this.instancedGeometry.attributes.aIsPhoto.array;
     const cols = this.atlasCols;
     const maxSlots = Math.min(this.photoCount, cols * this.atlasRows);
     const cellSize = 1.0 / cols;
 
-    // Randomly reassign ~20% of photo particles to potentially show newer photos
+    // Reassign ALL photo particles - each photo has 1/n probability
     for (let i = 0; i < this.particleCount; i++) {
-      if (isPhotos[i] > 0.5 && Math.random() < 0.2) {
+      if (isPhotos[i] > 0.5) {
         const imgIdx = Math.floor(Math.random() * maxSlots);
         const col = imgIdx % cols;
         const row = Math.floor(imgIdx / cols);
@@ -1150,6 +1154,7 @@ export class ParticleSystem {
     }
 
     this.instancedGeometry.attributes.aImgOffset.needsUpdate = true;
+    console.log(`Redistributed particles across ${maxSlots} photos (each ~${(100/maxSlots).toFixed(1)}% probability)`);
   }
 
   getPhotoCount() {
