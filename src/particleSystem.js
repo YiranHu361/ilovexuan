@@ -229,6 +229,7 @@ export class ParticleSystem {
         varying vec3 vColor;
         varying float vIsPhoto; // Pass to frag
         varying float vID; // Pass to frag
+        varying float vDepth; // For distance-based dimming
         
         // Quaternion rotation
         vec3 applyQuaternion(vec3 v, vec4 q) {
@@ -333,6 +334,11 @@ export class ParticleSystem {
 
           vec4 mvPosition = modelViewMatrix * vec4(finalPos + transformed, 1.0);
           gl_Position = projectionMatrix * mvPosition;
+          
+          // Calculate depth for distance-based dimming (0 = close, 1 = far)
+          // Normalize depth: camera at z=50, particles roughly -30 to +30
+          // Closer particles (higher mvPosition.z / less negative) should be dimmer
+          vDepth = clamp((-mvPosition.z - 20.0) / 60.0, 0.0, 1.0);
         }
       `,
       fragmentShader: `
@@ -350,6 +356,7 @@ export class ParticleSystem {
         varying vec3 vColor;
         varying float vIsPhoto;
         varying float vID;
+        varying float vDepth; // For distance-based dimming
 
         void main() {
           // Texture Coordinates
@@ -362,11 +369,16 @@ export class ParticleSystem {
           float isPhoto = vIsPhoto;
           
           vec4 photoContent = texture2D(uPhotoTexture, photoUV);
-          // Dim photos to avoid blowout
-          photoContent.rgb *= 0.4;
+          
+          // Dim photos significantly to avoid blowout with additive blending
+          // Also apply depth-based dimming - closer particles (lower depth) are dimmer
+          // to reduce the "sun in the middle" effect from overlapping
+          float baseBrightness = 0.15; // Reduced from 0.4
+          float depthDim = smoothstep(0.0, 1.0, vDepth) * 0.15 + 0.85; // 0.85-1.0 based on depth
+          photoContent.rgb *= baseBrightness * depthDim;
           
           vec4 dustContent = texture2D(uSparkleTexture, vUv);
-          dustContent.rgb *= vColor * 0.2; // Faint colored dust
+          dustContent.rgb *= vColor * 0.15; // Also reduce dust brightness
           
           vec4 openStateColor = mix(dustContent, photoContent, isPhoto);
           
