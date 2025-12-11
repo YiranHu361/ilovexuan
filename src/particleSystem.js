@@ -370,18 +370,15 @@ export class ParticleSystem {
           
           vec4 photoContent = texture2D(uPhotoTexture, photoUV);
           
-          // Heavily dim photos to avoid blowout with additive blending
-          // Center particles get dimmed much more aggressively
-          float baseBrightness = 0.08; // Very low base
-          float depthDim = smoothstep(0.0, 1.0, vDepth) * 0.7 + 0.3; // 0.3-1.0 based on depth (closer = much dimmer)
-          photoContent.rgb *= baseBrightness * depthDim;
-          photoContent.a *= 0.8; // Also reduce alpha to prevent buildup
+          // Photos: visible content but transparent
+          // Depth-based dimming to reduce center blowout
+          float depthDim = smoothstep(0.0, 1.0, vDepth) * 0.5 + 0.5; // 0.5-1.0 based on depth
+          photoContent.rgb *= 0.35 * depthDim; // Visible but not too bright
+          photoContent.a *= 0.25; // Very transparent
           
-          vec4 dustContent = texture2D(uSparkleTexture, vUv);
-          dustContent.rgb *= vColor * 0.10; // Very faint dust
-          dustContent.a *= 0.4;
-          
-          vec4 openStateColor = mix(dustContent, photoContent, isPhoto);
+          // No dust for photo particles, just show photos
+          // Non-photo particles show nothing in open state
+          vec4 openStateColor = isPhoto > 0.5 ? photoContent : vec4(0.0);
           
           
           // === Closed State (Shape) ===
