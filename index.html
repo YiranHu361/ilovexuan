@@ -30,6 +30,27 @@
           <label>Color</label>
           <input type="color" id="color-picker" value="#ff0066">
         </div>
+
+        <div class="control-group">
+          <label>Photos</label>
+          <div id="drop-zone" class="drop-zone">
+            <div class="drop-zone-content">
+              <span class="drop-icon">📷</span>
+              <span class="drop-text">Drop images here</span>
+              <span class="drop-subtext">or click to browse</span>
+            </div>
+            <input type="file" id="file-input" accept="image/*" multiple hidden>
+          </div>
+          <div id="photo-count" class="photo-count">8 photos loaded</div>
+        </div>
+      </div>
+      
+      <!-- Full-page drop overlay -->
+      <div id="drop-overlay" class="drop-overlay">
+        <div class="drop-overlay-content">
+          <span class="drop-overlay-icon">✨</span>
+          <span class="drop-overlay-text">Drop your photos to add them!</span>
+        </div>
       </div>
 
       <button id="fullscreen-btn" class="fullscreen-btn">Toggle Fullscreen</button>

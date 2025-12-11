@@ -14,7 +14,7 @@ export class ParticleSystem {
     this.renderer.toneMappingExposure = 1.1;
     this.camera.position.z = 50; // Further back initial view
 
-    this.particleCount = 30000;
+    this.particleCount = 90000;
     this.particles = null;
     this.snowParticles = null;
     this.material = null;
@@ -38,6 +38,15 @@ export class ParticleSystem {
 
     this.isClosed = false;
     this.color = new THREE.Color('#ff0066');
+
+    // Photo Atlas State
+    this.photoAtlasCanvas = null;
+    this.photoAtlasCtx = null;
+    this.photoCount = 8; // Initial photos loaded
+    this.nextPhotoSlot = 8; // Next slot to fill (0-8, wraps around)
+    this.atlasSize = 2048;
+    this.atlasCols = 3;
+    this.atlasRows = 3;
 
     // Load textures
     this.textureLoader = new THREE.TextureLoader();
@@ -63,16 +72,21 @@ export class ParticleSystem {
         console.log("Global Body Click Detected!", e.clientX, e.clientY);
         this.onClick(e);
     });
+    console.log("Particle System vReloaded - Lerp Speed Adjustment");
   }
 
   // initPicking removed
 
   createPhotoAtlas() {
     const canvas = document.createElement('canvas');
-    const size = 2048; // High res for photos
+    const size = this.atlasSize;
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext('2d');
+    
+    // Store references for later use
+    this.photoAtlasCanvas = canvas;
+    this.photoAtlasCtx = ctx;
     
     // Fill with black/transparent
     ctx.fillStyle = 'rgba(0,0,0,0)';
@@ -275,7 +289,7 @@ export class ParticleSystem {
           vec3 shapePos = applyQuaternion(aTargetPos, uHandRotation);
           
           // Apply Scale
-          shapePos *= uScale;
+          shapePos *= uScale * 1.5;
           
           // Mild breathing expansion
           shapePos += normalize(shapePos) * (breathe * 0.2);
@@ -312,29 +326,32 @@ export class ParticleSystem {
           // === ROTATION / TUMBLING ===
           vec3 transformed = position;
         
-          // Tumble when open
+          // Tumble when open (uState: 0 = open, 1 = closed)
           float tumbleFactor = (1.0 - uState);
         
-          if (tumbleFactor > 0.01) {
-            // Rotation
-            vec3 axis = normalize(aRandom);
-            float angle = uTime * (aRandom.y + 0.5) + aRandom.z * 10.0;
-            
-            float s = sin(angle);
-            float c = cos(angle);
-            float oc = 1.0 - c;
-            
-            mat3 rotMat = mat3(
-                oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,
-                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,
-                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c
-            );
-            transformed = rotMat * transformed;
-            transformed *= 2.5 * aSize; 
-          } else {
-            // Closed State
-            transformed *= 0.9 * aSize; 
-          }
+          // Always apply rotation, but scale rotation intensity by tumbleFactor
+          vec3 axis = normalize(aRandom);
+          float angle = uTime * (aRandom.y + 0.5) + aRandom.z * 10.0;
+          
+          float s = sin(angle);
+          float c = cos(angle);
+          float oc = 1.0 - c;
+          
+          mat3 rotMat = mat3(
+              oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,
+              oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,
+              oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c
+          );
+          
+          // Blend between rotated (open) and non-rotated (closed) position
+          vec3 rotatedPos = rotMat * transformed;
+          transformed = mix(transformed, rotatedPos, tumbleFactor);
+          
+          // Smoothly interpolate size: 2.5 (open) -> 0.9 (closed)
+          float openSize = 2.5 * aSize;
+          float closedSize = 0.9 * aSize;
+          float finalSize = mix(closedSize, openSize, tumbleFactor);
+          transformed *= finalSize;
 
           vec4 mvPosition = modelViewMatrix * vec4(finalPos + transformed, 1.0);
           gl_Position = projectionMatrix * mvPosition;
@@ -381,14 +398,27 @@ export class ParticleSystem {
           // Tint sparkle with per-particle color
           closedStateColor.rgb *= vColor;
           
-          // Emissive glow for sparkle (Closed)
-          closedStateColor.rgb *= 1.5; 
+          // Target brightness for the final tree state
+          // Increased from 0.6 to 0.8 to make it brighter (less dimming)
+          closedStateColor.rgb *= 0.9; 
           
           
           // === MIXING ===
           // uState: 1.0 = Closed (Sparkle), 0.0 = Open (Photo)
+          // Use a Cubic Bezier or smoother step for color transition to make it feel less abrupt
+          // Standard smoothstep is Hermite (3t^2 - 2t^3).
+          // Let's use a smoother 5th order polynomial (smootherstep) or just delay it slightly.
           
-          vec4 finalColor = mix(openStateColor, closedStateColor, vState);
+          float t = clamp(vState, 0.0, 1.0);
+          // Smootherstep: 6t^5 - 15t^4 + 10t^3
+          float mixT = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+          
+          vec4 finalColor = mix(openStateColor, closedStateColor, mixT);
+          
+          // === TRANSITION DENSITY CONTROL ===
+          // REMOVED: No dimming during transition
+          // float densityControl = 1.0 - 0.5 * sin(vState * 3.14159);
+          // finalColor.rgb *= densityControl;
           
           // Soften particle edges for non-photo sprites to cut aliasing
           float edge = smoothstep(0.98, 0.55, length(vUv - 0.5) * 2.0);
@@ -475,21 +505,65 @@ export class ParticleSystem {
     canvas.width = 128;
     canvas.height = 128;
     const ctx = canvas.getContext('2d');
-    
-    const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-    gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0,0,128,128);
+
+    ctx.fillStyle = 'rgba(0,0,0,0)';
+    ctx.clearRect(0, 0, 128, 128);
+
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.shadowBlur = 5;
+    ctx.shadowColor = 'white';
+
+    const cx = 64;
+    const cy = 64;
+    const radius = 45;
+
+    // Draw 6 branches
+    for (let i = 0; i < 6; i++) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate((i * 60 * Math.PI) / 180);
+
+        // Main branch
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, -radius);
+        ctx.stroke();
+
+        // Sub-branches (V shapes)
+        const branchSize = 12;
+        // Inner V
+        ctx.beginPath();
+        ctx.moveTo(0, -radius * 0.4);
+        ctx.lineTo(-branchSize, -radius * 0.6);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, -radius * 0.4);
+        ctx.lineTo(branchSize, -radius * 0.6);
+        ctx.stroke();
+
+        // Outer V
+        ctx.beginPath();
+        ctx.moveTo(0, -radius * 0.7);
+        ctx.lineTo(-branchSize * 0.8, -radius * 0.9);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, -radius * 0.7);
+        ctx.lineTo(branchSize * 0.8, -radius * 0.9);
+        ctx.stroke();
+
+        ctx.restore();
+    }
     
     const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
     return texture;
   }
 
   initSnow() {
-      const snowCount = 1000;
-      const geometry = new THREE.PlaneGeometry(0.5, 0.5);
+      const snowCount = 10000; // Increased count for better effect
+      const geometry = new THREE.PlaneGeometry(0.3, 0.3); // Slightly smaller individual flakes
       this.snowGeometry = new THREE.InstancedBufferGeometry();
       this.snowGeometry.index = geometry.index;
       this.snowGeometry.attributes.position = geometry.attributes.position;
@@ -498,24 +572,27 @@ export class ParticleSystem {
       const offsets = new Float32Array(snowCount * 3);
       const speeds = new Float32Array(snowCount);
       const randoms = new Float32Array(snowCount * 2); // Sway params
+      const rotSpeeds = new Float32Array(snowCount * 3); // Rotation axis/speed
 
       for(let i=0; i<snowCount; i++) {
           offsets[i*3] = (Math.random() - 0.5) * 60;
           offsets[i*3+1] = Math.random() * 40 - 10;
           offsets[i*3+2] = (Math.random() - 0.5) * 60;
           
-          speeds[i] = 1.0 + Math.random() * 2.0;
+          speeds[i] = 1.0 + Math.random() * 3.0;
           randoms[i*2] = Math.random();
           randoms[i*2+1] = Math.random();
+          
+          rotSpeeds[i*3] = (Math.random() - 0.5) * 2.0;
+          rotSpeeds[i*3+1] = (Math.random() - 0.5) * 2.0;
+          rotSpeeds[i*3+2] = (Math.random() - 0.5) * 2.0;
       }
 
       this.snowGeometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(offsets, 3));
       this.snowGeometry.setAttribute('aSpeed', new THREE.InstancedBufferAttribute(speeds, 1));
       this.snowGeometry.setAttribute('aRandom', new THREE.InstancedBufferAttribute(randoms, 2));
+      this.snowGeometry.setAttribute('aRotSpeed', new THREE.InstancedBufferAttribute(rotSpeeds, 3));
 
-      // Use basic material first to test geometry
-      // this.snowMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
-      
       this.snowMaterial = new THREE.ShaderMaterial({
           uniforms: {
               uTime: { value: 0 },
@@ -527,8 +604,24 @@ export class ParticleSystem {
              attribute vec3 aOffset;
              attribute float aSpeed;
              attribute vec2 aRandom;
+             attribute vec3 aRotSpeed;
              varying vec2 vUv;
              
+             // Rotation Matrix
+             mat4 rotationMatrix(vec3 axis, float angle) {
+                axis = normalize(axis);
+                float s = sin(angle);
+                float c = cos(angle);
+                float oc = 1.0 - c;
+                
+                return mat4(
+                    oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
+                    oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
+                    oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+                    0.0,                                0.0,                                0.0,                                1.0
+                );
+            }
+
              void main() {
                  vUv = uv;
                  vec3 pos = aOffset;
@@ -536,22 +629,30 @@ export class ParticleSystem {
                  // Fall
                  float y = pos.y - uTime * aSpeed;
                  // Wrap around (-10 to 30 range = 40 units)
-                 // Use a large offset to avoid negative modulo issues
-                 // Increase range to -20 to 20 to cover more screen
-                 y = mod(y + 10000.0, 40.0) - 20.0;
+                 // Increase range to -20 to 30 to cover more screen
+                 y = mod(y + 10000.0, 50.0) - 20.0;
                  
                  // Sway
                  float swayX = sin(uTime * 1.5 + aRandom.x * 10.0) * 0.5;
                  float swayZ = cos(uTime * 1.2 + aRandom.y * 10.0) * 0.5;
                  
+                 // Wind
+                 float wind = sin(uTime * 0.5) * 1.5;
+                 
                  pos.y = y;
-                 pos.x += swayX;
+                 pos.x += swayX + wind;
                  pos.z += swayZ;
                  
-                 vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                 // Tumbling Rotation
+                 // Rotate the vertex itself before adding to position
+                 float angle = uTime * length(aRotSpeed);
+                 vec3 axis = aRotSpeed;
+                 if (length(axis) < 0.01) axis = vec3(1.0, 0.0, 0.0);
                  
-                 // Billboard the particle (make it face camera)
-                 mvPosition.xy += position.xy;
+                 mat4 rot = rotationMatrix(axis, angle);
+                 vec4 rotatedVertex = rot * vec4(position, 1.0);
+                 
+                 vec4 mvPosition = modelViewMatrix * vec4(pos + rotatedVertex.xyz, 1.0);
                  
                  gl_Position = projectionMatrix * mvPosition;
              }
@@ -563,6 +664,8 @@ export class ParticleSystem {
              void main() {
                  if (uVisible < 0.1) discard;
                  vec4 color = texture2D(uTexture, vUv);
+                 // Boost white
+                 color.rgb *= 1.5;
                  if (color.a < 0.1) discard;
                  gl_FragColor = color;
              }
@@ -580,7 +683,7 @@ export class ParticleSystem {
       // Prevent frustum culling since vertices are moved in shader
       this.snowParticles.frustumCulled = false;
       this.scene.add(this.snowParticles);
-      console.log("Snow particles added to scene:", snowCount);
+      console.log("Snow particles updated with procedural texture:", snowCount);
   }
 
   generateShape(type) {
@@ -919,8 +1022,9 @@ export class ParticleSystem {
             // Clamp 0..1
             s = Math.max(0.0, Math.min(1.0, s));
             
-            // Map to output scale range (e.g., 0.5 to 2.0)
-            const finalScale = 0.5 + s * 1.5;
+            // Map to output scale range (e.g., 0.8 to 2.4)
+            // Slightly increased base size (0.5 -> 0.8) and range
+            const finalScale = 1.0 + s * 1.5;
             
             // Smooth it
             this.smoothedHandScale += (finalScale - this.smoothedHandScale) * posLerpFactor;
@@ -932,7 +1036,7 @@ export class ParticleSystem {
         const targetState = this.isClosed ? 1.0 : 0.0;
         
         // Slower transition for Bezier curve to look nice
-        const lerpSpeed = 2.0; 
+        const lerpSpeed = 0.5; 
         this.material.uniforms.uState.value += (targetState - this.material.uniforms.uState.value) * lerpSpeed * dt;
     } 
 
@@ -961,6 +1065,115 @@ export class ParticleSystem {
       if (this.snowMaterial) {
           this.snowMaterial.uniforms.uVisible.value = 1.0;
       }
+  }
+
+  addPhotoToAtlas(img) {
+    if (!this.photoAtlasCtx || !this.photoAtlasCanvas) {
+      console.error('Photo atlas not initialized');
+      return false;
+    }
+
+    // Calculate slot position (0-8, wrapping around)
+    const slot = this.nextPhotoSlot % (this.atlasCols * this.atlasRows);
+    
+    // Draw the image at this slot
+    this._drawImageToSlot(img, slot);
+
+    // Update counters
+    this.nextPhotoSlot++;
+    if (this.nextPhotoSlot > this.photoCount) {
+      this.photoCount = Math.min(this.nextPhotoSlot, this.atlasCols * this.atlasRows);
+    }
+
+    // Update particle image offsets to include new photos
+    this.updateParticlePhotoAssignments();
+
+    console.log(`Added photo to slot ${slot}. Total: ${this.photoCount}`);
+    return slot; // Return the slot number for database storage
+  }
+
+  addPhotoToAtlasAtSlot(img, slot) {
+    if (!this.photoAtlasCtx || !this.photoAtlasCanvas) {
+      console.error('Photo atlas not initialized');
+      return false;
+    }
+
+    // Draw the image at the specified slot
+    this._drawImageToSlot(img, slot);
+
+    // Update photo count if this slot is beyond current count
+    const maxSlots = this.atlasCols * this.atlasRows;
+    if (slot >= this.photoCount && slot < maxSlots) {
+      this.photoCount = slot + 1;
+    }
+    
+    // Track highest slot for next auto-assignment
+    if (slot >= this.nextPhotoSlot) {
+      this.nextPhotoSlot = slot + 1;
+    }
+
+    // Update particle image offsets
+    this.updateParticlePhotoAssignments();
+
+    console.log(`Loaded photo to slot ${slot}. Total: ${this.photoCount}`);
+    return true;
+  }
+
+  _drawImageToSlot(img, slot) {
+    const ctx = this.photoAtlasCtx;
+    const size = this.atlasSize;
+    const cols = this.atlasCols;
+    const cellW = size / cols;
+    const cellH = size / this.atlasRows;
+
+    const col = slot % cols;
+    const row = Math.floor(slot / cols);
+
+    // Draw cropped to square (center crop)
+    const aspect = img.width / img.height;
+    let sx = 0, sy = 0, sw = img.width, sh = img.height;
+
+    if (aspect > 1) {
+      // Landscape - crop sides
+      sw = img.height;
+      sx = (img.width - img.height) / 2;
+    } else {
+      // Portrait - crop top/bottom
+      sh = img.width;
+      sy = (img.height - img.width) / 2;
+    }
+
+    // Draw to atlas
+    ctx.drawImage(img, sx, sy, sw, sh, col * cellW, row * cellH, cellW, cellH);
+
+    // Update texture
+    this.photoTexture.needsUpdate = true;
+  }
+
+  updateParticlePhotoAssignments() {
+    // Reassign some particles to use the newer photos
+    const imgOffsets = this.instancedGeometry.attributes.aImgOffset.array;
+    const isPhotos = this.instancedGeometry.attributes.aIsPhoto.array;
+    const cols = this.atlasCols;
+    const maxSlots = Math.min(this.photoCount, cols * this.atlasRows);
+
+    // Randomly reassign ~20% of photo particles to potentially show newer photos
+    for (let i = 0; i < this.particleCount; i++) {
+      if (isPhotos[i] > 0.5 && Math.random() < 0.2) {
+        const imgIdx = Math.floor(Math.random() * maxSlots);
+        const col = imgIdx % cols;
+        const row = Math.floor(imgIdx / cols);
+
+        imgOffsets[i * 2] = col * (1.0 / 3.0);
+        imgOffsets[i * 2 + 1] = (2.0 - row) * (1.0 / 3.0);
+      }
+    }
+
+    this.instancedGeometry.attributes.aImgOffset.needsUpdate = true;
+  }
+
+  getPhotoCount() {
+    return this.photoCount;
   }
 
   initPopup() {

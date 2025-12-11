@@ -28,3 +28,5 @@ Interactive 3D Particle System for Chrome/Edge.
 ## Customization
 - Replace the placeholder texture generation in `src/particleSystem.js` (`createPlaceholderTexture`) with actual image loading if desired.
 
+
+
